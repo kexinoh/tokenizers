@@ -302,6 +302,8 @@ pub struct TokenizerBuilder<M, N, PT, PP, D> {
 
     truncation: Option<TruncationParams>,
     padding: Option<PaddingParams>,
+
+    role_to_token: Option<HashMap<String, String>>,
 }
 
 impl<M, N, PT, PP, D> Default for TokenizerBuilder<M, N, PT, PP, D>
@@ -336,6 +338,7 @@ where
             added_vocabulary: AddedVocabulary::new(),
             truncation: None,
             padding: None,
+            role_to_token: None,
         }
     }
 
@@ -356,6 +359,7 @@ where
             added_vocabulary: self.added_vocabulary,
             truncation: self.truncation,
             padding: self.padding,
+            role_to_token: self.role_to_token,
         })
     }
 
@@ -411,6 +415,13 @@ where
     #[must_use]
     pub fn with_padding(mut self, padding: Option<PaddingParams>) -> Self {
         self.padding = padding;
+        self
+    }
+
+    /// Set the role to token mapping.
+    #[must_use]
+    pub fn with_role_to_token(mut self, role_to_token: Option<HashMap<String, String>>) -> Self {
+        self.role_to_token = role_to_token;
         self
     }
 }
@@ -490,6 +501,7 @@ where
             added_vocabulary: t.added_vocabulary,
             padding: t.padding,
             truncation: t.truncation,
+            role_to_token: t.role_to_token,
         })
     }
 }
@@ -534,6 +546,10 @@ pub struct TokenizerImpl<M, N, PT, PP, D> {
     // General processing parameters
     truncation: Option<TruncationParams>,
     padding: Option<PaddingParams>,
+
+    // Which token plays which role ("eos_token" -> "</s>"), so a `tokenizer.json` can carry the
+    // special-token metadata that used to require a separate `tokenizer_config.json`.
+    role_to_token: Option<HashMap<String, String>>,
 }
 
 impl<M, N, PT, PP, D> TokenizerImpl<M, N, PT, PP, D>
@@ -557,6 +573,8 @@ where
 
             truncation: None,
             padding: None,
+
+            role_to_token: None,
         }
     }
 
@@ -686,6 +704,36 @@ where
     /// Get a mutable reference to the currently set padding parameters
     pub fn get_padding_mut(&mut self) -> Option<&mut PaddingParams> {
         self.padding.as_mut()
+    }
+
+    /// Set the role to token mapping
+    pub fn with_role_to_token(
+        &mut self,
+        role_to_token: Option<HashMap<String, String>>,
+    ) -> &mut Self {
+        self.role_to_token = role_to_token;
+        self
+    }
+
+    /// Get the role to token mapping
+    pub fn get_role_to_token(&self) -> Option<&HashMap<String, String>> {
+        self.role_to_token.as_ref()
+    }
+
+    /// Get a mutable reference to the role to token mapping
+    pub fn get_role_to_token_mut(&mut self) -> Option<&mut HashMap<String, String>> {
+        self.role_to_token.as_mut()
+    }
+
+    /// Get the token string for a given role
+    pub fn get_token_for_role(&self, role: &str) -> Option<&String> {
+        self.role_to_token.as_ref().and_then(|m| m.get(role))
+    }
+
+    /// Get the token ID for a given role (resolves via vocab lookup)
+    pub fn get_id_for_role(&self, role: &str) -> Option<u32> {
+        self.get_token_for_role(role)
+            .and_then(|token| self.token_to_id(token))
     }
 
     // Get the vocabulary as a plain HashMap for bindings compatibility

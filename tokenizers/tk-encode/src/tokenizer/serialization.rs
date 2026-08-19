@@ -24,7 +24,7 @@ where
     where
         S: Serializer,
     {
-        let mut tokenizer = serializer.serialize_struct("Tokenizer", 9)?;
+        let mut tokenizer = serializer.serialize_struct("Tokenizer", 10)?;
 
         // Start by adding the current version
         tokenizer.serialize_field("version", SERIALIZATION_VERSION)?;
@@ -32,6 +32,9 @@ where
         // Params
         tokenizer.serialize_field("truncation", &self.truncation)?;
         tokenizer.serialize_field("padding", &self.padding)?;
+
+        // Which token plays which role, so this file can stand in for `tokenizer_config.json`
+        tokenizer.serialize_field("role_to_token", &self.role_to_token)?;
 
         // Added tokens
         tokenizer.serialize_field("added_tokens", &self.added_vocabulary)?;
@@ -65,6 +68,7 @@ where
                 "version",
                 "truncation",
                 "padding",
+                "role_to_token",
                 "added_tokens",
                 "normalizer",
                 "pre_tokenizer",
@@ -125,6 +129,9 @@ where
                 "padding" => {
                     builder = builder.with_padding(map.next_value()?);
                 }
+                "role_to_token" => {
+                    builder = builder.with_role_to_token(map.next_value()?);
+                }
                 "added_tokens" => {
                     tokens = map.next_value()?;
                 }
@@ -181,6 +188,7 @@ mod tests {
   "version": "1.0",
   "truncation": null,
   "padding": null,
+  "role_to_token": null,
   "added_tokens": [
     {
       "id": 0,
@@ -227,6 +235,80 @@ mod tests {
         let tok_str = serde_json::to_string_pretty(&tokenizer).unwrap();
         // It should be exactly the same as above
         assert_eq!(tok_str, tok_json);
+    }
+
+    #[test]
+    fn role_to_token_survives_a_round_trip() {
+        use crate::models::wordpiece::WordPiece;
+        use crate::tokenizer::AddedToken;
+        use std::collections::HashMap;
+
+        let mut tokenizer = Tokenizer::new(WordPiece::default());
+        tokenizer
+            .add_special_tokens([
+                AddedToken::from("</s>", true),
+                AddedToken::from("<s>", true),
+                AddedToken::from("<pad>", true),
+            ])
+            .unwrap();
+
+        let mut roles = HashMap::new();
+        roles.insert("eos_token".to_string(), "</s>".to_string());
+        roles.insert("bos_token".to_string(), "<s>".to_string());
+        roles.insert("pad_token".to_string(), "<pad>".to_string());
+        tokenizer.with_role_to_token(Some(roles));
+
+        let ser = serde_json::to_string(&tokenizer).unwrap();
+        assert!(ser.contains("role_to_token"));
+
+        let de = Tokenizer::from_str(&ser).unwrap();
+        let round_tripped = de
+            .get_role_to_token()
+            .expect("role_to_token should survive");
+        assert_eq!(round_tripped.get("eos_token"), Some(&"</s>".to_string()));
+        assert_eq!(round_tripped.get("bos_token"), Some(&"<s>".to_string()));
+        assert_eq!(round_tripped.get("pad_token"), Some(&"<pad>".to_string()));
+    }
+
+    #[test]
+    fn role_to_token_resolves_tokens_and_ids() {
+        use crate::models::wordpiece::WordPiece;
+        use crate::tokenizer::AddedToken;
+        use std::collections::HashMap;
+
+        let mut tokenizer = Tokenizer::new(WordPiece::default());
+        tokenizer
+            .add_special_tokens([
+                AddedToken::from("</s>", true),
+                AddedToken::from("<unk>", true),
+            ])
+            .unwrap();
+
+        let mut roles = HashMap::new();
+        roles.insert("eos_token".to_string(), "</s>".to_string());
+        roles.insert("unk_token".to_string(), "<unk>".to_string());
+        tokenizer.with_role_to_token(Some(roles));
+
+        assert_eq!(
+            tokenizer.get_token_for_role("eos_token"),
+            Some(&"</s>".to_string())
+        );
+        assert_eq!(tokenizer.get_token_for_role("nonexistent"), None);
+
+        // Resolved through the vocab, in the order the tokens were added.
+        assert_eq!(tokenizer.get_id_for_role("eos_token"), Some(0));
+        assert_eq!(tokenizer.get_id_for_role("unk_token"), Some(1));
+        assert_eq!(tokenizer.get_id_for_role("nonexistent"), None);
+    }
+
+    /// An untouched tokenizer still reports no roles, and absent `role_to_token` deserializes fine.
+    #[test]
+    fn role_to_token_defaults_to_none() {
+        let tok_json = r#"{"version":"1.0","model":{"type":"WordPiece","unk_token":"[UNK]","continuing_subword_prefix":"","max_input_chars_per_word":100,"vocab":{}}}"#;
+        let tokenizer = Tokenizer::from_str(tok_json).unwrap();
+        assert!(tokenizer.get_role_to_token().is_none());
+        assert_eq!(tokenizer.get_token_for_role("eos_token"), None);
+        assert_eq!(tokenizer.get_id_for_role("eos_token"), None);
     }
 
     #[cfg(feature = "http")]

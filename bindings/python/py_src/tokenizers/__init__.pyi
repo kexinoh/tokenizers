@@ -684,10 +684,27 @@ class Tokenizer:
         >>> # Load a pre-built tokenizer from HuggingFace Hub
         >>> tokenizer = Tokenizer.from_pretrained("bert-base-uncased")
     """
+    def __getattr__(self, /, attr: str) -> Any:
+        """
+        Resolve `tokenizer.eos_token` and `tokenizer.eos_token_id` — and any other role in
+        `role_to_token` — as attributes. Python only calls this once normal lookup has failed, so
+        real methods and properties (`id_to_token`, `role_to_token`, ...) never reach it.
+        """
     def __getnewargs__(self, /) -> tuple: ...
     def __getstate__(self, /) -> Any: ...
     def __new__(cls, /, model: Model) -> Tokenizer: ...
     def __repr__(self, /) -> str: ...
+    def __setattr__(self, /, attr: str, value: Any) -> None:
+        """
+        Assign a role: `tokenizer.eos_token = "</s>"` records it in `role_to_token` and adds the
+        token when the vocabulary does not have it yet. `= None` removes the role.
+
+        Anything the type itself defines is dispatched normally first, so a `#[setter]` added later
+        can never be silently shadowed by the role handling, and `id_to_token` (a method, not a
+        property) is not mistaken for a role just because of how it is spelled. This is a
+        `#[pyclass(dict)]`, so unrecognised attributes still land in the instance dict exactly as
+        they did before this hook existed.
+        """
     def __setstate__(self, /, state: Any) -> None: ...
     def __str__(self, /) -> str: ...
     def add_special_tokens(self, /, tokens: list) -> int:
@@ -1244,6 +1261,19 @@ class Tokenizer:
     def pre_tokenizer(self, /, pretok: PreTokenizer | None) -> None:
         """
         Set the :class:`~tokenizers.normalizers.Normalizer`
+        """
+    @property
+    def role_to_token(self, /) -> dict[str, str] | None:
+        """
+        Get the role to token mapping
+
+        Returns:
+            :obj:`Dict[str, str]` or :obj:`None`: The role to token mapping if set
+        """
+    @role_to_token.setter
+    def role_to_token(self, /, role_to_token: dict[str, str] | None) -> None:
+        """
+        Set the role to token mapping
         """
     def save(self, /, path: str, pretty: bool = True) -> "None":
         """

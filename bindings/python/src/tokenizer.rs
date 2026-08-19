@@ -683,6 +683,87 @@ impl PyTokenizer {
         PyTokenizer::from_model(model.clone())
     }
 
+    /// Resolve `tokenizer.eos_token` and `tokenizer.eos_token_id` — and any other role in
+    /// `role_to_token` — as attributes. Python only calls this once normal lookup has failed, so
+    /// real methods and properties (`id_to_token`, `role_to_token`, ...) never reach it.
+    fn __getattr__(&self, py: Python<'_>, attr: &str) -> PyResult<Py<PyAny>> {
+        let tokenizer = self.read_inner()?;
+
+        if let Some(role) = attr.strip_suffix("_id")
+            && role.ends_with("_token")
+        {
+            if let Some(id) = tokenizer.get_id_for_role(role) {
+                return Ok(id.into_pyobject(py)?.into_any().unbind());
+            }
+            // The map exists but this role is unset, or its token is not in the vocabulary. `None`
+            // rather than `AttributeError`, so `pad_token_id` reads the way it does in transformers.
+            if tokenizer.get_role_to_token().is_some() {
+                return Ok(py.None());
+            }
+        }
+
+        if let Some(token) = tokenizer.get_token_for_role(attr) {
+            return Ok(PyString::new(py, token).into_any().unbind());
+        }
+
+        // Same reasoning as above, for the token itself — covers a role that was set and then removed.
+        if attr.ends_with("_token") && tokenizer.get_role_to_token().is_some() {
+            return Ok(py.None());
+        }
+
+        Err(exceptions::PyAttributeError::new_err(format!(
+            "'Tokenizer' object has no attribute '{attr}'"
+        )))
+    }
+
+    /// Assign a role: `tokenizer.eos_token = "</s>"` records it in `role_to_token` and adds the
+    /// token when the vocabulary does not have it yet. `= None` removes the role.
+    ///
+    /// Anything the type itself defines is dispatched normally first, so a `#[setter]` added later
+    /// can never be silently shadowed by the role handling, and `id_to_token` (a method, not a
+    /// property) is not mistaken for a role just because of how it is spelled. This is a
+    /// `#[pyclass(dict)]`, so unrecognised attributes still land in the instance dict exactly as
+    /// they did before this hook existed.
+    fn __setattr__(slf: &Bound<'_, Self>, attr: &str, value: Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
+        let type_attr = slf.get_type().getattr(attr).ok();
+
+        if let Some(descriptor) = &type_attr
+            && let Ok(setter) = descriptor.getattr(intern!(py, "__set__"))
+        {
+            setter.call1((slf, &value))?;
+            return Ok(());
+        }
+
+        if type_attr.is_none() && attr.ends_with("_token") {
+            let this = slf.borrow();
+            let mut tokenizer = this.write_inner()?;
+            match value.extract::<Option<String>>()? {
+                Some(token) => {
+                    if tokenizer.get_role_to_token().is_none() {
+                        tokenizer.with_role_to_token(Some(HashMap::new()));
+                    }
+                    if let Some(roles) = tokenizer.get_role_to_token_mut() {
+                        roles.insert(attr.to_string(), token.clone());
+                    }
+                    // A role has to point at a token that exists, otherwise `*_token_id` is `None`.
+                    if tokenizer.token_to_id(&token).is_none() {
+                        let added = PyAddedToken::from(token, Some(true)).get_token();
+                        ToPyResult(tokenizer.add_tokens([added])).into_py()?;
+                    }
+                }
+                None => {
+                    if let Some(roles) = tokenizer.get_role_to_token_mut() {
+                        roles.remove(attr);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        slf.getattr(intern!(py, "__dict__"))?.set_item(attr, value)
+    }
+
     fn __getstate__(&self, py: Python) -> PyResult<Py<PyAny>> {
         let data = serde_json::to_string(&*self.read_inner()?).map_err(|e| {
             exceptions::PyException::new_err(format!(
@@ -1970,6 +2051,22 @@ impl PyTokenizer {
             .unwrap()
             .with_decoder(decoder.map(|d| d.clone()));
     }
+
+    /// Get the role to token mapping
+    ///
+    /// Returns:
+    ///     :obj:`Dict[str, str]` or :obj:`None`: The role to token mapping if set
+    #[getter]
+    fn get_role_to_token(&self) -> PyResult<Option<HashMap<String, String>>> {
+        Ok(self.read_inner()?.get_role_to_token().cloned())
+    }
+
+    /// Set the role to token mapping
+    #[setter]
+    fn set_role_to_token(&self, role_to_token: Option<HashMap<String, String>>) -> PyResult<()> {
+        self.write_inner()?.with_role_to_token(role_to_token);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2014,7 +2111,7 @@ mod test {
         let output = crate::utils::serde_pyo3::to_string(&tokenizer).unwrap();
         assert_eq!(
             output,
-            "Tokenizer(version=\"1.0\", truncation=None, padding=None, added_tokens=[], normalizer=Sequence(normalizers=[NFKC(), Lowercase()]), pre_tokenizer=None, post_processor=None, decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))"
+            "Tokenizer(version=\"1.0\", truncation=None, padding=None, role_to_token=None, added_tokens=[], normalizer=Sequence(normalizers=[NFKC(), Lowercase()]), pre_tokenizer=None, post_processor=None, decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))"
         );
     }
 }

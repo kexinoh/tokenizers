@@ -334,6 +334,10 @@ impl AddedVocabulary {
                 && !self.special_tokens_set.contains(&token.content);
             if is_new_special {
                 self.special_tokens_set.insert(token.content.clone());
+            } else if !token.special {
+                // Re-added as non-special: it has to leave the skip set too, or
+                // `decode(skip_special_tokens = true)` keeps dropping it.
+                self.special_tokens_set.remove(&token.content);
             }
             self.added_tokens_map_r.insert(new_id, token);
         }
@@ -672,6 +676,32 @@ mod tests {
         fn save(&self, _folder: &Path, _name: Option<&str>) -> Result<Vec<PathBuf>> {
             unimplemented!()
         }
+    }
+
+    #[test]
+    fn re_adding_a_special_token_as_non_special_clears_the_skip_set() {
+        let model = ModelMock::new(&[("test", 0), ("tost", 1)]);
+        let mut vocab = AddedVocabulary::new();
+        let normalizer: Option<&NormalizerWrapper> = None;
+
+        vocab
+            .add_tokens([AddedToken::from("marker", true)], &model, normalizer)
+            .unwrap();
+        assert!(vocab.is_special_token("marker"));
+
+        // Same content, `special = false`. The flags differ, so this is not the ignored fast path;
+        // the token has to leave `special_tokens_set` or `decode(skip_special_tokens = true)`
+        // keeps dropping it.
+        vocab
+            .add_tokens([AddedToken::from("marker", false)], &model, normalizer)
+            .unwrap();
+        assert!(!vocab.is_special_token("marker"));
+
+        // ...and back again, so we know the insert side still works.
+        vocab
+            .add_tokens([AddedToken::from("marker", true)], &model, normalizer)
+            .unwrap();
+        assert!(vocab.is_special_token("marker"));
     }
 
     #[test]

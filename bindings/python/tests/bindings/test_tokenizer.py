@@ -830,13 +830,114 @@ class TestTokenizer:
         assert tokenizer.pre_tokenizer == None
 
 
+class TestRoleToToken:
+    def test_role_to_token(self):
+        tokenizer = Tokenizer(BPE())
+        tokenizer.add_special_tokens(["</s>", "<s>", "<pad>", "<unk>"])
+
+        assert tokenizer.role_to_token is None
+
+        tokenizer.role_to_token = {
+            "eos_token": "</s>",
+            "bos_token": "<s>",
+            "pad_token": "<pad>",
+            "unk_token": "<unk>",
+        }
+        assert tokenizer.role_to_token == {
+            "eos_token": "</s>",
+            "bos_token": "<s>",
+            "pad_token": "<pad>",
+            "unk_token": "<unk>",
+        }
+
+        assert tokenizer.eos_token == "</s>"
+        assert tokenizer.bos_token == "<s>"
+        assert tokenizer.pad_token == "<pad>"
+        assert tokenizer.unk_token == "<unk>"
+
+        # Added in order, so the ids follow.
+        assert tokenizer.eos_token_id == 0
+        assert tokenizer.bos_token_id == 1
+        assert tokenizer.pad_token_id == 2
+        assert tokenizer.unk_token_id == 3
+
+    def test_setting_a_role_adds_the_token(self):
+        tokenizer = Tokenizer(BPE())
+        tokenizer.role_to_token = {}
+
+        # "[NEW_EOS]" is not in the vocabulary yet; assigning the role has to add it, otherwise
+        # `eos_token_id` would be None.
+        tokenizer.eos_token = "[NEW_EOS]"
+        assert tokenizer.eos_token == "[NEW_EOS]"
+        assert tokenizer.eos_token_id is not None
+        assert tokenizer.id_to_token(tokenizer.eos_token_id) == "[NEW_EOS]"
+
+    def test_setting_a_role_to_none_removes_it(self):
+        tokenizer = Tokenizer(BPE())
+        tokenizer.add_special_tokens(["</s>"])
+        tokenizer.role_to_token = {"eos_token": "</s>"}
+
+        tokenizer.eos_token = None
+        assert tokenizer.eos_token is None
+        assert tokenizer.eos_token_id is None
+
+    def test_unknown_attribute_still_raises(self):
+        tokenizer = Tokenizer(BPE())
+        with pytest.raises(AttributeError):
+            _ = tokenizer.not_a_real_attribute
+
+    def test_role_to_token_serialization(self):
+        import json
+
+        tokenizer = Tokenizer(BPE())
+        tokenizer.add_special_tokens(["</s>", "<s>"])
+        tokenizer.role_to_token = {"eos_token": "</s>", "bos_token": "<s>"}
+
+        data = json.loads(tokenizer.to_str())
+        assert data["role_to_token"] == {"eos_token": "</s>", "bos_token": "<s>"}
+
+        loaded = Tokenizer.from_str(tokenizer.to_str())
+        assert loaded.role_to_token == {"eos_token": "</s>", "bos_token": "<s>"}
+        assert loaded.eos_token == "</s>"
+        assert loaded.bos_token == "<s>"
+
+    # --- regressions for what `__setattr__` could have broken ---
+
+    def test_existing_setters_still_work(self):
+        """`__setattr__` intercepts every assignment, so the real properties must still dispatch."""
+        tokenizer = Tokenizer(BPE())
+        tokenizer.normalizer = Lowercase()
+        assert tokenizer.normalizer is not None
+        tokenizer.normalizer = None
+        assert tokenizer.normalizer is None
+
+        tokenizer.decoder = decoders.ByteLevel()
+        assert tokenizer.decoder is not None
+
+        tokenizer.encode_special_tokens = True
+        assert tokenizer.encode_special_tokens is True
+
+    def test_id_to_token_is_not_mistaken_for_a_role(self):
+        """`id_to_token` ends with `_token` but is a method, not a role."""
+        tokenizer = Tokenizer(BPE())
+        tokenizer.add_special_tokens(["</s>"])
+        assert tokenizer.id_to_token(0) == "</s>"
+        assert tokenizer.role_to_token is None
+
+    def test_arbitrary_attributes_still_land_in_the_instance_dict(self):
+        """Tokenizer is a `pyclass(dict)`; setting an unrelated attribute worked before."""
+        tokenizer = Tokenizer(BPE())
+        tokenizer.some_marker = 42
+        assert tokenizer.some_marker == 42
+
+
 class TestTokenizerRepr:
     def test_repr(self):
         tokenizer = Tokenizer(BPE())
         out = repr(tokenizer)
         assert (
             out
-            == 'Tokenizer(version="1.0", truncation=None, padding=None, added_tokens=[], normalizer=None, pre_tokenizer=None, post_processor=None, decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))'
+            == 'Tokenizer(version="1.0", truncation=None, padding=None, role_to_token=None, added_tokens=[], normalizer=None, pre_tokenizer=None, post_processor=None, decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))'
         )
 
     def test_repr_complete(self):
@@ -851,7 +952,7 @@ class TestTokenizerRepr:
         out = repr(tokenizer)
         assert (
             out
-            == 'Tokenizer(version="1.0", truncation=None, padding=None, added_tokens=[], normalizer=Sequence(normalizers=[Lowercase(), Strip(strip_left=True, strip_right=True)]), pre_tokenizer=ByteLevel(add_prefix_space=True, trim_offsets=True, use_regex=True), post_processor=TemplateProcessing(single=[SpecialToken(id="[CLS]", type_id=0), Sequence(id=A, type_id=0), SpecialToken(id="[SEP]", type_id=0)], pair=[SpecialToken(id="[CLS]", type_id=0), Sequence(id=A, type_id=0), SpecialToken(id="[SEP]", type_id=0), Sequence(id=B, type_id=1), SpecialToken(id="[SEP]", type_id=1)], special_tokens={"[CLS]":SpecialToken(id="[CLS]", ids=[1], tokens=["[CLS]"]), "[SEP]":SpecialToken(id="[SEP]", ids=[0], tokens=["[SEP]"])}), decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))'
+            == 'Tokenizer(version="1.0", truncation=None, padding=None, role_to_token=None, added_tokens=[], normalizer=Sequence(normalizers=[Lowercase(), Strip(strip_left=True, strip_right=True)]), pre_tokenizer=ByteLevel(add_prefix_space=True, trim_offsets=True, use_regex=True), post_processor=TemplateProcessing(single=[SpecialToken(id="[CLS]", type_id=0), Sequence(id=A, type_id=0), SpecialToken(id="[SEP]", type_id=0)], pair=[SpecialToken(id="[CLS]", type_id=0), Sequence(id=A, type_id=0), SpecialToken(id="[SEP]", type_id=0), Sequence(id=B, type_id=1), SpecialToken(id="[SEP]", type_id=1)], special_tokens={"[CLS]":SpecialToken(id="[CLS]", ids=[1], tokens=["[CLS]"]), "[SEP]":SpecialToken(id="[SEP]", ids=[0], tokens=["[SEP]"])}), decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))'
         )
 
 
